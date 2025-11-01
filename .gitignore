@@ -1,0 +1,10 @@
+*
+
+!.gitignore
+!LICENSE
+!README.md
+!include/
+!include/adh/
+!include/adh/entity.hpp
+!test/
+!test/test.cpp

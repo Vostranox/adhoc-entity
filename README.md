@@ -34,6 +34,30 @@ world.remove<Velocity>(e);
 world.destroy(e);
 ```
 
+### Deferred structural changes
+
+Inside a `for_each` callback you may read and write the components you were
+given, destroy the entity currently being visited, or remove from it a
+component the system iterates. Do this last, the references you were given
+are stale afterwards. Every other structural change, destroying other
+entities, adding components to any entity, or removing components the system
+does not iterate must be deferred through a `CommandBuffer` and flushed
+after the loop.
+
+```cpp
+adh::ecs::CommandBuffer cbuf;
+
+world.get_system<Position, Health>().for_each([&](adh::ecs::Entity e, Position& pos, Health& hp) {
+    if (hp.value <= 0.0f) {
+        cbuf.destroy(e);
+        auto new_entity = world.create_entity();
+        cbuf.add<Position>(new_entity, pos); // applied by flush, after the loop
+    }
+});
+
+cbuf.flush(world);
+```
+
 ## Tests
 
 The `test/` folder has a standalone test that exercises the whole public API. From the project root:

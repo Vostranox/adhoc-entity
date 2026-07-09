@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -207,6 +208,15 @@ namespace adh::ecs {
         std::size_t scanned;
     };
 
+    namespace detail {
+        template <typename...>
+        struct unique_types : std::true_type {};
+
+        template <typename T, typename... Rest>
+        struct unique_types<T, Rest...>
+            : std::bool_constant<(!std::is_same_v<T, Rest> && ...) && unique_types<Rest...>::value> {};
+    } // namespace detail
+
     template <typename... Components>
     class System;
 
@@ -235,6 +245,9 @@ namespace adh::ecs {
                 dst->entities = src->entities;
                 dst->type = src->type;
                 for (const ComponentID cid : src->type) {
+                    if (!src->components.contains(cid)) {
+                        continue;
+                    }
                     auto cloned{ src->components[cid]->clone() };
                     if (cloned == nullptr) {
                         return std::nullopt;
@@ -282,6 +295,8 @@ namespace adh::ecs {
 
         template <typename... T, typename... Args>
         decltype(auto) add(Entity entity, Args&&... args) {
+            static_assert(detail::unique_types<T...>::value, "add: component types must be distinct");
+            assert(is_valid(entity) && "add: invalid entity");
             Record& r{ record_of(entity) };
             assert((!has_component<T>(entity) && ...) && "add: entity already has the component(s)");
             Archetype* node = nullptr;
@@ -325,6 +340,8 @@ namespace adh::ecs {
 
         template <typename... T>
         void remove(Entity entity) {
+            static_assert(detail::unique_types<T...>::value, "remove: component types must be distinct");
+            assert(is_valid(entity) && "remove: invalid entity");
             Record& r{ record_of(entity) };
             assert(r.archetype != nullptr && "remove: entity has no components");
             assert(has_component<T...>(entity) && "remove: entity does not have the component(s)");
@@ -352,6 +369,7 @@ namespace adh::ecs {
         }
 
         void remove_all(Entity entity) noexcept {
+            assert(is_valid(entity) && "remove_all: invalid entity");
             Record& r{ record_of(entity) };
             if (r.archetype == nullptr) {
                 return;
@@ -366,6 +384,7 @@ namespace adh::ecs {
 
         template <typename... T>
         [[nodiscard]] bool has_component(Entity entity) const noexcept {
+            static_assert(detail::unique_types<T...>::value, "has_component: component types must be distinct");
             if (!is_valid(entity)) {
                 return false;
             }
@@ -375,6 +394,8 @@ namespace adh::ecs {
 
         template <typename... T>
         [[nodiscard]] decltype(auto) get(Entity entity) {
+            static_assert(detail::unique_types<T...>::value, "get: component types must be distinct");
+            assert(is_valid(entity) && "get: invalid entity");
             Record& r{ record_of(entity) };
             assert(has_component<T...>(entity) && "get: entity does not have the component(s)");
             if constexpr (sizeof...(T) == 1) {
@@ -574,15 +595,6 @@ namespace adh::ecs {
         std::unique_ptr<Archetype> m_root_archetype;
     };
 
-    namespace detail {
-        template <typename...>
-        struct unique_types : std::true_type {};
-
-        template <typename T, typename... Rest>
-        struct unique_types<T, Rest...>
-            : std::bool_constant<(!std::is_same_v<T, Rest> && ...) && unique_types<Rest...>::value> {};
-    } // namespace detail
-
     template <typename... Components>
     class System {
         static_assert(detail::unique_types<Components...>::value, "System: component types must be distinct");
@@ -635,6 +647,47 @@ namespace adh::ecs {
 
         World* m_world;
         ArchetypeID m_ids;
+    };
+
+    class CommandBuffer {
+      public:
+        template <typename... T, typename... Args>
+        void add(Entity entity, Args&&... args) {
+            m_commands.emplace_back([entity, ... a = std::forward<Args>(args)](World& world) mutable {
+                world.add<T...>(entity, std::move(a)...);
+            });
+        }
+
+        template <typename... T>
+        void remove(Entity entity) {
+            m_commands.emplace_back([entity](World& world) {
+                world.remove<T...>(entity);
+            });
+        }
+
+        void destroy(Entity entity) {
+            m_commands.emplace_back([entity](World& world) {
+                world.destroy(entity);
+            });
+        }
+
+        void flush(World& world) {
+            for (auto& command : m_commands) {
+                command(world);
+            }
+            m_commands.clear();
+        }
+
+        [[nodiscard]] std::size_t size() const noexcept {
+            return m_commands.size();
+        }
+
+        [[nodiscard]] bool empty() const noexcept {
+            return m_commands.empty();
+        }
+
+      private:
+        std::vector<std::move_only_function<void(World&)>> m_commands;
     };
 
     template <typename... T>
